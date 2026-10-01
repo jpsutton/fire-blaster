@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TV Remote Setup
+Comment=Choose the IR code set for the TV in front of you
+Exec=fireblaster-setup --start
+Icon=preferences-desktop-remote-desktop
+Categories=Settings;HardwareSettings;
+Keywords=tv;remote;ir;infrared;volume;

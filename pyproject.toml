@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fire-blaster"
+version = "0.1.0"
+description = "Turn Bluetooth remote volume/power keys into IR blasts for whatever TV is in front of you"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["evdev>=1.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+ui = ["PySide6>=6.5"]
+
+[project.scripts]
+fireblasterd = "fireblaster.daemon:main"
+fireblaster-import-amazon = "fireblaster.importer:main"
+fireblaster-pronto = "fireblaster.pronto:main"
+fireblaster-setup = "fireblaster.ui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

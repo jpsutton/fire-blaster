@@ -1,0 +1,18 @@
+[Unit]
+Description=fire-blaster: IR TV control from Bluetooth remote keys
+After=bluetooth.target
+
+[Service]
+ExecStart=/usr/bin/fireblasterd
+DynamicUser=yes
+# Read /dev/input/event* and write /dev/uinput (see udev/70-fire-blaster.rules).
+SupplementaryGroups=input
+StateDirectory=fire-blaster
+# Control socket for the setup UI: /run/fire-blaster/control.sock. The
+# directory must be traversable by the desktop user.
+RuntimeDirectory=fire-blaster
+RuntimeDirectoryMode=0755
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

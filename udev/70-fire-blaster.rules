@@ -1,0 +1,9 @@
+# Let the 'input' group create virtual input devices, so fireblasterd can
+# re-emit the remote's navigation keys after grabbing it.
+#
+# static_node: /dev/uinput exists before the uinput module loads, as a static
+# node. Give that node these permissions too. Otherwise it starts out 0600,
+# a uaccess rule (KDE Connect ships one) adds an ACL whose owning-group entry
+# copies that 0600 (group::---), and the later chmod to 0660 only moves the
+# ACL mask, so the group still can't open it.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

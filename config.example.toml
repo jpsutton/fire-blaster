@@ -1,0 +1,88 @@
+# fire-blaster daemon config. Copy to /etc/fire-blaster/config.toml.
+# Every setting is optional; the values shown are the defaults.
+
+[device]
+# Regexes (re.search) matched against input device names. Run
+# `fireblasterd --list-devices` with the remote connected to see its name.
+names = ["^AR( Keyboard)?$", "Amazon", "Fire ?TV"]
+
+[keys]
+# evdev key name -> IR function name (Amazon database naming).
+# Keys listed here are swallowed and blasted; all other keys pass through.
+# Replacing this table replaces the whole keymap.
+KEY_VOLUMEUP = "VOLUME_UP"
+KEY_VOLUMEDOWN = "VOLUME_DOWN"
+KEY_MUTE = "MUTE_TOGGLE"
+KEY_POWER = "POWER_TOGGLE"
+
+# Keys the remote sends as something else (none by default). Applied first:
+# [hold], [setup] combo and apps all see the new key. A remote that has only
+# [remap] keys is still grabbed.
+# [remap]
+# KEY_KPENTER = "KEY_ENTER"   # OK as the main Enter key
+# KEY_MENU = "KEY_COMPOSE"    # Menu as the Menu keysym (KEY_MENU is XF86MenuKB)
+
+# Keys swallowed outright (none by default): no IR, and apps never see them.
+# Use it for keys the remote already handles itself, e.g. volume and power
+# sent to the TV by the remote's own IR. Wins over [keys] and [hold]; applies
+# after [remap]. A remote that has only [drop] keys is still grabbed.
+# [drop]
+# keys = ["KEY_VOLUMEUP", "KEY_VOLUMEDOWN", "KEY_MUTE", "KEY_POWER"]
+
+# Per-remote settings (none by default), for a box with more than one kind of
+# remote. Each [[remote]] applies to devices whose name matches one of its
+# `names` (regexes, as in [device]; matching devices are grabbed too) and can
+# replace the global [keys] and/or [drop] for them; what it leaves out falls
+# back to the global tables. The first matching [[remote]] wins. [remap],
+# [hold] and [setup] stay global.
+#
+# Example: the Alexa remote controls the TV itself, so its volume and power
+# keys are dropped; a Media Center remote's volume keys still reach the PC
+# (or, with an IR blaster, could blast via its own `keys`).
+# [[remote]]
+# names = ["^AR( Keyboard)?$"]
+# drop = ["KEY_VOLUMEUP", "KEY_VOLUMEDOWN", "KEY_MUTE", "KEY_POWER"]
+#
+# [[remote]]
+# names = ["CIR transceiver$", "eHome Infrared"]
+# keys = { KEY_POWER2 = "POWER_TOGGLE" }
+
+# Keys that do something else when held (none by default). A key listed here
+# never reaches apps directly: released before `seconds`, it is sent as a tap
+# on release; held longer, the `send` keys are sent as one chord instead. The
+# key must be one the remote reports as held (see [setup] below). A remote
+# that has only [hold] keys and no [keys] entries is still grabbed.
+#
+# Example: short Home goes to the app (Kodi's own home screen), a long Home
+# sends Meta+Home Page, which a desktop shortcut can bind.
+# [hold.KEY_HOMEPAGE]
+# seconds = 0.6                         # default
+# send = ["KEY_LEFTMETA", "KEY_HOMEPAGE"]
+
+[repeat]
+functions = ["VOLUME_UP", "VOLUME_DOWN"]  # re-blasted while held
+delay = 0.35                              # seconds before the first repeat
+interval = 0.12                           # seconds between repeats
+
+[setup]
+# Hold these keys together for hold_seconds to enter setup mode. They must be
+# keys the remote reports as held: on the Alexa Voice Remote, volume, mute and
+# power arrive as instant taps, so use navigation keys. OK is KEY_KPENTER.
+combo = ["KEY_BACK", "KEY_KPENTER"]
+hold_seconds = 5.0
+timeout_seconds = 60.0   # idle time before setup gives up (nothing saved)
+test_function = "VOLUME_UP"  # blasted on each candidate; "" to disable
+device_types = ["tv"]
+# Brands offered in setup, in this order.
+brands = ["LG", "Samsung", "Sony", "Vizio", "TCL", "Hisense", "Insignia", "Philips",
+          "Sharp", "Toshiba", "Panasonic", "RCA", "Westinghouse", "Element", "JVC",
+          "Magnavox", "Sanyo", "Hitachi"]
+include_other_brands = false  # true appends every other brand, alphabetically
+
+[paths]
+# Later directories override profiles with the same id.
+profiles = ["/usr/share/fire-blaster/profiles", "/etc/fire-blaster/profiles", "~/.local/share/fire-blaster/profiles"]
+# state = "/var/lib/fire-blaster/state.json"   # default: $STATE_DIRECTORY or ~/.local/state/fire-blaster
+# Control socket for fireblaster-setup. Default: $RUNTIME_DIRECTORY (systemd),
+# else $XDG_RUNTIME_DIR/fire-blaster, else /run/fire-blaster.
+# socket = "/run/fire-blaster/control.sock"

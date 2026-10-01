@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=TV Remote Setup overlay
+Comment=Shows the setup screen when Back+OK is held on the remote
+Exec=fireblaster-setup
+NoDisplay=true
+X-KDE-autostart-phase=2
