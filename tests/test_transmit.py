@@ -129,11 +129,13 @@ def test_emitter_sets_mode_and_carrier_then_writes(sys_rc, lirc):
     emitter = LircEmitter(sys_rc=sys_rc)
     emitter.send(Transmission("VOLUME_UP", SIGNAL))
     emitter.send(Transmission("VOLUME_UP", SIGNAL, repeat=True))
-    # The USB transceiver is picked; mode once, carrier only when it changes.
-    assert fake.calls == [
+    # The USB transceiver is picked. Mode at open, then mode and carrier
+    # before every write, as ir-ctl and the old service.irblaster did.
+    per_send = [
         ("/dev/lirc1", LIRC_SET_SEND_MODE, LIRC_MODE_PULSE),
         ("/dev/lirc1", LIRC_SET_SEND_CARRIER, 38000),
     ]
+    assert fake.calls == [("/dev/lirc1", LIRC_SET_SEND_MODE, LIRC_MODE_PULSE)] + per_send * 2
     assert fake.writes == [("/dev/lirc1", [3400, 1600, 500, 400, 500])] * 2
     assert fake.slept == [0.04, 0.04]
 
@@ -156,7 +158,7 @@ def test_emitter_skips_devices_that_cannot_send(sys_rc, lirc):
 def test_emitter_without_carrier_control_does_not_set_it(sys_rc, lirc):
     fake = lirc({"/dev/lirc1": LIRC_CAN_SEND_PULSE})
     LircEmitter(driver="mceusb", sys_rc=sys_rc).send(Transmission("x", SIGNAL))
-    assert [c[1] for c in fake.calls] == [LIRC_SET_SEND_MODE]
+    assert [c[1] for c in fake.calls] == [LIRC_SET_SEND_MODE, LIRC_SET_SEND_MODE]
     assert len(fake.writes) == 1
 
 
@@ -170,7 +172,7 @@ def test_emitter_reopens_after_a_failed_write(sys_rc, lirc):
     fake.fail_write = False
     emitter.send(Transmission("x", SIGNAL))
     assert fake.writes == [("/dev/lirc1", [3400, 1600, 500, 400, 500])]
-    # Reopened, so mode and carrier are set again.
+    # Reopened: mode at open, then mode and carrier for each write.
     assert [c[1] for c in fake.calls if c[0] == "/dev/lirc1"].count(LIRC_SET_SEND_CARRIER) == 2
 
 

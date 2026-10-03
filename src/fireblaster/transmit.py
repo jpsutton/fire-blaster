@@ -129,7 +129,6 @@ class LircEmitter:
         self._fd: int | None = None
         self._path: Path | None = None
         self._can_set_carrier = False
-        self._carrier: int | None = None
         self._unavailable: str | None = None  # last reason logged, so it's said once
 
     def close(self) -> None:
@@ -140,7 +139,6 @@ class LircEmitter:
                 pass
         self._fd = None
         self._path = None
-        self._carrier = None
 
     def _candidates(self) -> list[Path]:
         if self.device:
@@ -174,7 +172,6 @@ class LircEmitter:
                 continue
             self._fd, self._path = fd, path
             self._can_set_carrier = bool(features & LIRC_CAN_SET_SEND_CARRIER)
-            self._carrier = None
             log.info("IR transmitter: %s", path)
             return
         raise EmitterUnavailable("; ".join(reasons))
@@ -195,9 +192,12 @@ class LircEmitter:
             return
         carrier = tx.signal.carrier
         try:
-            if carrier and self._can_set_carrier and carrier != self._carrier:
+            # Mode and carrier before every write, as ir-ctl and the old
+            # service.irblaster do, so a transceiver that was reset or
+            # replugged behind an open file descriptor still gets them.
+            fcntl.ioctl(self._fd, LIRC_SET_SEND_MODE, struct.pack("=I", LIRC_MODE_PULSE))
+            if carrier and self._can_set_carrier:
                 fcntl.ioctl(self._fd, LIRC_SET_SEND_CARRIER, struct.pack("=I", carrier))
-                self._carrier = carrier
             os.write(self._fd, struct.pack(f"={len(pulses)}I", *pulses))
         except OSError:
             # Unplugged, or the device went away: find it again next time.
