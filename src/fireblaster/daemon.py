@@ -59,6 +59,29 @@ def _node_signature(path: str) -> tuple[int, int] | None:
     return (st.st_rdev, st.st_ctime_ns)
 
 
+# Grabbing a remote while one of its keys is down strands that key: the press
+# already reached the desktop through the raw device, but the release would
+# come to fireblasterd instead, so apps see the key held for good (Wayland
+# clients repeat it, then ignore further presses). Wait for the keys to come up.
+GRAB_WAIT_SECONDS = 3.0
+
+
+async def _wait_for_released_keys(dev: InputDevice) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + GRAB_WAIT_SECONDS
+    while True:
+        try:
+            held = dev.active_keys()
+        except OSError:
+            return  # gone; the read loop will notice
+        if not held:
+            return
+        if loop.time() >= deadline:
+            log.warning("%s: grabbing with %s still held", dev.name, ", ".join(key_name(k) for k in held))
+            return
+        await asyncio.sleep(0.02)
+
+
 class DeviceManager:
     def __init__(self, cfg: Config, controller: Controller, grab: bool = True):
         self.cfg = cfg
@@ -122,6 +145,7 @@ class DeviceManager:
                 except (OSError, evdev.UInputError) as e:
                     log.error("cannot create uinput clone for %s (%s); leaving it ungrabbed, apps will also see volume/power", name, e)
                 else:
+                    await _wait_for_released_keys(dev)
                     dev.grab()
                     self.uinputs[path] = ui
             log.info("remote connected: %s (%s)%s", name, path, "" if ui else " [not grabbed]")
