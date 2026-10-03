@@ -46,6 +46,19 @@ KEY_POWER = "POWER_TOGGLE"
 # [[remote]]
 # names = ["CIR transceiver$", "eHome Infrared"]
 # keys = { KEY_POWER2 = "POWER_TOGGLE" }
+#
+# A remote can also blast a fixed profile instead of the TV chosen in setup
+# mode, e.g. a Media Center remote driving an AV receiver:
+# [[remote]]
+# names = ["eHome Infrared"]
+# profile = "denon-avr"
+# [remote.keys]
+# KEY_VOLUMEUP = "VOLUME_UP"
+# KEY_VOLUMEDOWN = "VOLUME_DOWN"
+# KEY_MUTE = "MUTE_TOGGLE"
+# KEY_NUMERIC_1 = "INPUT_BD"
+# KEY_NUMERIC_2 = "INPUT_GAME"
+# KEY_NUMERIC_3 = "INPUT_DVD"
 
 # Keys that do something else when held (none by default). A key listed here
 # never reaches apps directly: released before `seconds`, it is sent as a tap
@@ -58,6 +71,12 @@ KEY_POWER = "POWER_TOGGLE"
 # [hold.KEY_HOMEPAGE]
 # seconds = 0.6                         # default
 # send = ["KEY_LEFTMETA", "KEY_HOMEPAGE"]
+
+[ir]
+# IR transmitter: "auto" (first LIRC device that can send, USB first), a
+# device path such as "/dev/lirc1", or "log" to only log transmissions.
+device = "auto"
+# driver = "mceusb"   # with "auto": only LIRC devices of this kernel driver
 
 [repeat]
 functions = ["VOLUME_UP", "VOLUME_DOWN"]  # re-blasted while held

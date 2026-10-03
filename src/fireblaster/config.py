@@ -58,6 +58,9 @@ class RemoteRule:
     names: tuple[str, ...]
     keymap: dict[int, str] | None = None  # this remote's [keys]
     drop: frozenset[int] | None = None  # this remote's [drop] keys
+    # A profile id this remote's keys always blast (e.g. an AV receiver),
+    # instead of the TV chosen in setup mode.
+    profile: str | None = None
 
     def matches(self, device_name: str) -> bool:
         return any(re.search(p, device_name) for p in self.names)
@@ -97,6 +100,12 @@ class Config:
     setup_device_types: list[str] = field(default_factory=lambda: ["tv"])
     setup_brands: list[str] = field(default_factory=lambda: list(DEFAULT_SETUP_BRANDS))
     setup_include_other_brands: bool = False
+    # IR transmitter: "auto" (first LIRC device that can send, USB first),
+    # a device path such as "/dev/lirc1", or "log" to only log transmissions.
+    ir_device: str = "auto"
+    # With ir_device "auto": only use LIRC devices of this kernel driver,
+    # e.g. "mceusb".
+    ir_driver: str | None = None
     profile_dirs: list[Path] = field(default_factory=_default_profile_dirs)
     state_path: Path = field(default_factory=default_state_path)
     control_socket: Path = field(default_factory=default_socket_path)
@@ -171,6 +180,19 @@ class Config:
         self.setup_brands = list(setup.get("brands", self.setup_brands))
         self.setup_include_other_brands = bool(setup.get("include_other_brands", self.setup_include_other_brands))
 
+        ir = data.get("ir", {})
+        if not isinstance(ir, dict):
+            raise ConfigError("[ir]: expected a table")
+        unknown = set(ir) - {"device", "driver"}
+        if unknown:
+            raise ConfigError(f"[ir]: unknown setting(s) {', '.join(sorted(unknown))}")
+        if "device" in ir:
+            if not isinstance(ir["device"], str) or not ir["device"]:
+                raise ConfigError('[ir] device: expected "auto", "log" or a device path')
+            self.ir_device = ir["device"]
+        if "driver" in ir:
+            self.ir_driver = str(ir["driver"]) or None
+
         paths = data.get("paths", {})
         if "profiles" in paths:
             self.profile_dirs = [Path(p).expanduser() for p in paths["profiles"]]
@@ -198,6 +220,12 @@ class Config:
     def drop_for(self, device_name: str) -> set[int] | frozenset[int]:
         rule = self.rule_for(device_name)
         return self.drop if rule is None or rule.drop is None else rule.drop
+
+    def profile_for(self, device_name: str) -> str | None:
+        """The profile a remote's keys always blast, or None for the TV
+        chosen in setup mode."""
+        rule = self.rule_for(device_name)
+        return rule.profile if rule else None
 
 
 def _tables(value, where: str) -> list[dict]:
@@ -228,12 +256,15 @@ def _remote_rule(table: dict, index: int) -> RemoteRule:
             re.compile(n)
         except re.error as e:
             raise ConfigError(f"{where}: bad regex {n!r}: {e}") from None
-    unknown = set(table) - {"names", "keys", "drop"}
+    unknown = set(table) - {"names", "keys", "drop", "profile"}
     if unknown:
         raise ConfigError(f"{where}: unknown setting(s) {', '.join(sorted(unknown))}")
     keymap = _keymap(table["keys"], f"{where} keys") if "keys" in table else None
     drop = frozenset(_key_list(table["drop"], f"{where} drop")) if "drop" in table else None
-    return RemoteRule(tuple(names), keymap, drop)
+    profile = table.get("profile")
+    if profile is not None and (not isinstance(profile, str) or not profile):
+        raise ConfigError(f"{where}: 'profile' expects a profile id")
+    return RemoteRule(tuple(names), keymap, drop, profile)
 
 
 def _key_code(name: str, where: str) -> int:

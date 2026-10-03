@@ -7,3 +7,7 @@
 # copies that 0600 (group::---), and the later chmod to 0660 only moves the
 # ACL mask, so the group still can't open it.
 KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+
+# Let the 'input' group blast IR through LIRC devices (/dev/lircN, e.g. a
+# Media Center USB transceiver); they are root-only by default.
+SUBSYSTEM=="lirc", GROUP="input", MODE="0660"

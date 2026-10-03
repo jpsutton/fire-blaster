@@ -31,7 +31,7 @@ from .control import ControlServer
 from .controller import Controller, key_name
 from .profiles import ProfileSet
 from .state import State
-from .transmit import LogEmitter, Transmitter
+from .transmit import LircEmitter, LogEmitter, Transmitter, lirc_nodes
 
 log = logging.getLogger("fireblasterd")
 
@@ -176,13 +176,25 @@ def list_devices(cfg: Config) -> int:
             print(f"      intercepted keys: {', '.join(sorted(key_name(k) for k in hit))}")
         dev.close()
     print("\n* = would be grabbed with the current [device] names")
+    nodes = lirc_nodes()
+    print("\nIR transmitters (LIRC devices; [ir] device = \"auto\" tries them in this order):")
+    for node in nodes:
+        print(f"  {node.path}: {node.name!r} driver={node.driver}{' (USB)' if node.usb else ''}")
+    if not nodes:
+        print("  none")
     return 0
 
 
 async def run(cfg: Config, grab: bool) -> None:
     profiles = ProfileSet.load(cfg.profile_dirs)
     state = State.load(cfg.state_path)
-    tx = Transmitter(LogEmitter())
+    if cfg.ir_device == "log":
+        emitter = LogEmitter()
+    elif cfg.ir_device == "auto":
+        emitter = LircEmitter(driver=cfg.ir_driver)
+    else:
+        emitter = LircEmitter(device=cfg.ir_device)
+    tx = Transmitter(emitter)
     controller = Controller(cfg, profiles, state, tx)
     devices = DeviceManager(cfg, controller, grab=grab)
     controller.inject = devices.inject
@@ -209,6 +221,8 @@ async def run(cfg: Config, grab: bool) -> None:
         await asyncio.gather(*tasks, *devices.tasks.values(), return_exceptions=True)
         if control:
             await control.close()
+        if isinstance(emitter, LircEmitter):
+            emitter.close()
         log.info("stopped")
 
 
@@ -230,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", type=Path, help="control socket path for the setup UI")
     parser.add_argument("--list-devices", action="store_true", help="show input devices and which would be grabbed, then exit")
     parser.add_argument("--no-grab", action="store_true", help="observe keys without grabbing (apps also see them)")
+    parser.add_argument("--ir", metavar="DEVICE", help='IR transmitter: "auto", "log" (only log), or a path like /dev/lirc1')
     parser.add_argument("-v", "--verbose", action="count", default=0, help="-v for debug logging (per-key events, IR data)")
     args = parser.parse_args(argv)
 
@@ -248,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.state_path = args.state
     if args.socket:
         cfg.control_socket = args.socket
+    if args.ir:
+        cfg.ir_device = args.ir
 
     if args.list_devices:
         return list_devices(cfg)
