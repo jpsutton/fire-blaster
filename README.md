@@ -12,9 +12,9 @@ It runs as a standalone systemd service instead of a Kodi add-on, reads the
 remote through evdev instead of eventlircd, and keeps IR codes in profile files
 instead of in the source.
 
-**Status:** IR output is stubbed. `LogEmitter` logs each transmission to stderr
-instead of sending it. A LIRC emitter (raw pulse writes to `/dev/lirc0`) goes
-behind the same interface once there is hardware to test with.
+**Status:** IR goes out through any kernel LIRC transmitter (`/dev/lircN`).
+The Media Center USB transceiver (`mceusb`) is the target hardware. See
+[IR output](#ir-output).
 
 ## How it works
 
@@ -40,6 +40,56 @@ BT remote ──► /dev/input/eventN ──grab──► fireblasterd ──►
   alternate on each press.
 - The remote sleeps and reconnects often, so input devices are rescanned every
   second.
+
+## IR output
+
+fireblasterd writes each code's pulse/space durations to a LIRC device after
+setting its carrier, as `ir-ctl --send` does, but from the running daemon, so
+there is no process to start per key press:
+
+```toml
+[ir]
+device = "auto"     # default; or "/dev/lirc1", or "log" to only log
+# driver = "mceusb" # with "auto": only devices of this kernel driver
+```
+
+With `"auto"`, the first LIRC device that can send is used, USB devices first:
+a plugged-in blaster wins over a built-in CIR port, which often has a
+transmitter in the chip but no emitter wired to it. The device is opened on
+the first key press and found again after an error, so a blaster plugged in
+or replugged later is picked up. With no transmitter, fireblasterd logs one
+warning and drops the codes. `fireblasterd --list-devices` lists the
+transmitters, and `--ir log` only logs what would be sent.
+
+LIRC devices are root-only by default; `udev/70-fire-blaster.rules` opens
+them to the `input` group, as it does `/dev/uinput`.
+
+## A remote for an AV receiver
+
+The old service.irblaster add-on sent a Media Center remote's volume, mute and
+number keys to a Denon AV receiver hidden in a cabinet, through the MCE
+transceiver's blaster cable. A `[[remote]]` table with a `profile` does the
+same: that remote's keys always blast that profile, whatever TV setup mode
+picked.
+
+```toml
+[[remote]]
+names = ["eHome Infrared"]   # the Media Center transceiver's input device
+profile = "denon-avr"        # extra-profiles/avr/denon-avr.toml
+
+[remote.keys]
+KEY_VOLUMEUP = "VOLUME_UP"
+KEY_VOLUMEDOWN = "VOLUME_DOWN"
+KEY_MUTE = "MUTE_TOGGLE"
+KEY_NUMERIC_1 = "INPUT_BD"
+KEY_NUMERIC_2 = "INPUT_GAME"
+KEY_NUMERIC_3 = "INPUT_DVD"
+```
+
+Unlike the add-on, volume repeats while held (the MCE remote reports holds),
+and no Kodi `noop` keymap is needed, because grabbed keys never reach apps.
+`extra-profiles/` holds hand-captured profiles like this one; the packaged
+profile directory gets them next to the generated TV code sets.
 
 ## Remapped keys
 

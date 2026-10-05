@@ -496,3 +496,72 @@ def test_drop_and_keys_per_remote(tmp_path):
         ctl.handle(ar, e.KEY_VOLUMEDOWN, 0)
 
     run(body())
+
+
+def test_remote_with_its_own_profile(tmp_path):
+    """A [[remote]] profile (an AV receiver behind a Media Center remote) gets
+    that remote's keys whatever TV is active, even with none, and in setup."""
+
+    async def body():
+        ctl, tx, _ = make(tmp_path, active=None)
+        ctl.cfg.apply({
+            "remote": [{
+                "names": ["eHome Infrared"],
+                "profile": "cablebox",
+                "keys": {"KEY_VOLUMEUP": "VOLUME_UP", "KEY_MUTE": "MUTE_TOGGLE"},
+            }],
+        })
+        mce, ar = "/dev/input/event3", "/dev/input/event1"
+        ctl.attach(mce, "Media Center Ed. eHome Infrared Remote Transceiver (1784:0006)")
+        ctl.attach(ar, "AR Keyboard")
+
+        assert ctl.handle(mce, e.KEY_MUTE, 1) is False
+        ctl.handle(mce, e.KEY_MUTE, 0)
+        # Volume repeats while held, against the same profile.
+        assert ctl.handle(mce, e.KEY_VOLUMEUP, 1) is False
+        await asyncio.sleep(0.08)
+        ctl.handle(mce, e.KEY_VOLUMEUP, 0)
+        assert tx.sent[0] == ("cablebox", "MUTE_TOGGLE", False)
+        assert tx.sent[1] == ("cablebox", "VOLUME_UP", False)
+        assert ("cablebox", "VOLUME_UP", True) in tx.sent
+        # The other remote still has no TV profile: nothing sent.
+        tx.sent.clear()
+        ctl.handle(ar, e.KEY_VOLUMEUP, 1)
+        ctl.handle(ar, e.KEY_VOLUMEUP, 0)
+        assert tx.sent == []
+
+        # Setup mode picks the TV; the receiver remote is unaffected.
+        await enter_setup(ctl)
+        tx.sent.clear()
+        ctl.handle(mce, e.KEY_MUTE, 1)
+        ctl.handle(mce, e.KEY_MUTE, 0)
+        assert tx.sent == [("cablebox", "MUTE_TOGGLE", False)]
+        ctl.shutdown()
+
+    run(body())
+
+
+def test_remote_profile_that_is_not_installed(tmp_path):
+    async def body():
+        ctl, tx, _ = make(tmp_path, "lg-a")
+        ctl.cfg.apply({"remote": [{"names": ["eHome"], "profile": "nope"}]})
+        ctl.attach(SRC, "eHome Infrared Transceiver")
+        assert ctl.handle(SRC, e.KEY_VOLUMEUP, 1) is False  # still not passed to apps
+        ctl.handle(SRC, e.KEY_VOLUMEUP, 0)
+        assert tx.sent == []
+
+    run(body())
+
+
+def test_remote_profile_and_ir_config():
+    cfg = Config()
+    cfg.apply({"remote": [{"names": ["eHome"], "profile": "denon-avr"}], "ir": {"driver": "mceusb"}})
+    assert cfg.profile_for("Media Center Ed. eHome Infrared Remote Transceiver") == "denon-avr"
+    assert cfg.profile_for("AR Keyboard") is None
+    assert (cfg.ir_device, cfg.ir_driver) == ("auto", "mceusb")
+    cfg.apply({"ir": {"device": "/dev/lirc1"}})
+    assert cfg.ir_device == "/dev/lirc1"
+    for bad in ({"remote": [{"names": ["x"], "profile": ""}]}, {"remote": [{"names": ["x"], "profile": 3}]},
+                {"ir": {"device": ""}}, {"ir": {"carrier": 38000}}, {"ir": "auto"}):
+        with pytest.raises(ConfigError):
+            Config().apply(bad)

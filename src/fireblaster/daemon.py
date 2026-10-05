@@ -31,7 +31,7 @@ from .control import ControlServer
 from .controller import Controller, key_name
 from .profiles import ProfileSet
 from .state import State
-from .transmit import LogEmitter, Transmitter
+from .transmit import LircEmitter, LogEmitter, Transmitter, lirc_nodes
 
 log = logging.getLogger("fireblasterd")
 
@@ -57,6 +57,29 @@ def _node_signature(path: str) -> tuple[int, int] | None:
     except OSError:
         return None
     return (st.st_rdev, st.st_ctime_ns)
+
+
+# Grabbing a remote while one of its keys is down strands that key: the press
+# already reached the desktop through the raw device, but the release would
+# come to fireblasterd instead, so apps see the key held for good (Wayland
+# clients repeat it, then ignore further presses). Wait for the keys to come up.
+GRAB_WAIT_SECONDS = 3.0
+
+
+async def _wait_for_released_keys(dev: InputDevice) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + GRAB_WAIT_SECONDS
+    while True:
+        try:
+            held = dev.active_keys()
+        except OSError:
+            return  # gone; the read loop will notice
+        if not held:
+            return
+        if loop.time() >= deadline:
+            log.warning("%s: grabbing with %s still held", dev.name, ", ".join(key_name(k) for k in held))
+            return
+        await asyncio.sleep(0.02)
 
 
 class DeviceManager:
@@ -122,6 +145,7 @@ class DeviceManager:
                 except (OSError, evdev.UInputError) as e:
                     log.error("cannot create uinput clone for %s (%s); leaving it ungrabbed, apps will also see volume/power", name, e)
                 else:
+                    await _wait_for_released_keys(dev)
                     dev.grab()
                     self.uinputs[path] = ui
             log.info("remote connected: %s (%s)%s", name, path, "" if ui else " [not grabbed]")
@@ -176,13 +200,25 @@ def list_devices(cfg: Config) -> int:
             print(f"      intercepted keys: {', '.join(sorted(key_name(k) for k in hit))}")
         dev.close()
     print("\n* = would be grabbed with the current [device] names")
+    nodes = lirc_nodes()
+    print("\nIR transmitters (LIRC devices; [ir] device = \"auto\" tries them in this order):")
+    for node in nodes:
+        print(f"  {node.path}: {node.name!r} driver={node.driver}{' (USB)' if node.usb else ''}")
+    if not nodes:
+        print("  none")
     return 0
 
 
 async def run(cfg: Config, grab: bool) -> None:
     profiles = ProfileSet.load(cfg.profile_dirs)
     state = State.load(cfg.state_path)
-    tx = Transmitter(LogEmitter())
+    if cfg.ir_device == "log":
+        emitter = LogEmitter()
+    elif cfg.ir_device == "auto":
+        emitter = LircEmitter(driver=cfg.ir_driver)
+    else:
+        emitter = LircEmitter(device=cfg.ir_device)
+    tx = Transmitter(emitter)
     controller = Controller(cfg, profiles, state, tx)
     devices = DeviceManager(cfg, controller, grab=grab)
     controller.inject = devices.inject
@@ -209,6 +245,8 @@ async def run(cfg: Config, grab: bool) -> None:
         await asyncio.gather(*tasks, *devices.tasks.values(), return_exceptions=True)
         if control:
             await control.close()
+        if isinstance(emitter, LircEmitter):
+            emitter.close()
         log.info("stopped")
 
 
@@ -230,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", type=Path, help="control socket path for the setup UI")
     parser.add_argument("--list-devices", action="store_true", help="show input devices and which would be grabbed, then exit")
     parser.add_argument("--no-grab", action="store_true", help="observe keys without grabbing (apps also see them)")
+    parser.add_argument("--ir", metavar="DEVICE", help='IR transmitter: "auto", "log" (only log), or a path like /dev/lirc1')
     parser.add_argument("-v", "--verbose", action="count", default=0, help="-v for debug logging (per-key events, IR data)")
     args = parser.parse_args(argv)
 
@@ -248,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.state_path = args.state
     if args.socket:
         cfg.control_socket = args.socket
+    if args.ir:
+        cfg.ir_device = args.ir
 
     if args.list_devices:
         return list_devices(cfg)

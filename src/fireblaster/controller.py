@@ -144,6 +144,8 @@ class Controller:
         self._combo = frozenset(cfg.setup_combo)
         # source -> (keymap, drop keys) for its remote ([[remote]] or global)
         self._sources: dict[Hashable, tuple[dict[int, str], set[int] | frozenset[int]]] = {}
+        # source -> profile id its keys always blast ([[remote]] profile)
+        self._fixed: dict[Hashable, str] = {}
 
         self._down: dict[int, Hashable] = {}  # intercepted key code -> source device
         self._passed: set[tuple[Hashable, int]] = set()  # (source, code) presses sent to uinput
@@ -182,6 +184,12 @@ class Controller:
     def attach(self, source: Hashable, device_name: str) -> None:
         """A remote device was grabbed: use its [[remote]] settings."""
         self._sources[source] = (self.cfg.keymap_for(device_name), self.cfg.drop_for(device_name))
+        if fixed := self.cfg.profile_for(device_name):
+            self._fixed[source] = fixed
+            if self.profiles.get(fixed) is None:
+                log.warning("%s: profile %r not found in %s", device_name, fixed, ", ".join(map(str, self.cfg.profile_dirs)))
+        else:
+            self._fixed.pop(source, None)
 
     def _settings(self, source: Hashable) -> tuple[dict[int, str], set[int] | frozenset[int]]:
         return self._sources.get(source) or (self.cfg.keymap, self.cfg.drop)
@@ -335,6 +343,7 @@ class Controller:
     def source_gone(self, source: Hashable) -> None:
         """A remote device disappeared (sleep, disconnect): forget its keys."""
         self._sources.pop(source, None)
+        self._fixed.pop(source, None)
         self._passed = {k for k in self._passed if k[0] != source}
         for code in [c for c, s in self._down.items() if s == source]:
             self._release(code)
@@ -386,6 +395,19 @@ class Controller:
 
     def _press(self, source: Hashable, code: int, function: str) -> None:
         self._down[code] = source
+
+        # A remote with its own profile (an AV receiver, say) blasts that,
+        # setup mode or not: setup only picks the TV.
+        if fixed := self._fixed.get(source):
+            profile = self.profiles.get(fixed)
+            if profile is None:
+                log.warning("%s pressed but profile %r is not installed", key_name(code), fixed)
+                return
+            self._stop_repeat()
+            self._send(profile, function)
+            if function in self.cfg.repeat_functions:
+                self._start_repeat(code, function, profile)
+            return
 
         if self.setup:
             self._arm_setup_timeout()

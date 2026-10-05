@@ -17,11 +17,17 @@ class FakeDevice:
         self._keys, self._events = keys, events
         self.grabbed = self.closed = False
         self.ff_effects_count = 0
+        self.held = []  # successive active_keys() answers; [] once exhausted
+        self.held_while_grabbing = None
 
     def capabilities(self):
         return {e.EV_KEY: self._keys}
 
+    def active_keys(self):
+        return self.held.pop(0) if self.held else []
+
     def grab(self):
+        self.held_while_grabbing = self.active_keys()
         self.grabbed = True
 
     def close(self):
@@ -185,3 +191,29 @@ def test_remote_rule_names_are_grabbed_with_their_own_drop(tmp_path, monkeypatch
     (ui,) = FakeUInput.instances
     keys = [(c, v) for t, c, v in ui.events if t == e.EV_KEY]
     assert keys == [(e.KEY_UP, 1), (e.KEY_UP, 0)]  # mute dropped
+
+
+def test_grab_waits_for_held_keys(tmp_path, monkeypatch):
+    """A key down when the remote is grabbed would stay down for the desktop
+    (its release would come to us), so the grab waits for it to come up."""
+    mgr, _ = make_manager(tmp_path, monkeypatch)
+    dev = FakeDevice("AR", [e.KEY_VOLUMEUP, e.KEY_DOWN], [])
+    dev.held = [[e.KEY_DOWN], [e.KEY_DOWN], [e.KEY_DOWN]]
+    mgr.tasks[dev.path] = None
+
+    asyncio.run(mgr.serve(dev))
+
+    assert dev.grabbed and dev.held_while_grabbing == []
+
+
+def test_grab_gives_up_on_a_stuck_key(tmp_path, monkeypatch, caplog):
+    mgr, _ = make_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(daemon, "GRAB_WAIT_SECONDS", 0.05)
+    dev = FakeDevice("AR", [e.KEY_VOLUMEUP, e.KEY_DOWN], [])
+    dev.held = [[e.KEY_DOWN]] * 1000
+    mgr.tasks[dev.path] = None
+
+    asyncio.run(mgr.serve(dev))
+
+    assert dev.grabbed
+    assert "grabbing with KEY_DOWN still held" in caplog.text
