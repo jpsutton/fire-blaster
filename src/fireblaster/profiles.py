@@ -41,7 +41,7 @@ class Profile:
     codes: dict[str, tuple[str, ...]]
     confidence: int = 0
     blast_count: int = 1
-    carrier: int = 38000
+    carrier: int = pronto.DEFAULT_CARRIER_HZ
     path: Path | None = None
     _decoded: dict[str, tuple[IrSignal, ...]] = field(default_factory=dict, repr=False, compare=False)
 
@@ -88,7 +88,7 @@ class Profile:
             codes=codes,
             confidence=int(data.get("confidence", 0)),
             blast_count=max(1, int(data.get("blast_count", 1))),
-            carrier=int(data.get("carrier", 38000)),
+            carrier=int(data.get("carrier", pronto.DEFAULT_CARRIER_HZ)),
             path=path,
         )
 

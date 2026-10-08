@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 PRONTO_CLOCK_US = 0.241246
 DEFAULT_GAP_US = 40000
+DEFAULT_CARRIER_HZ = 38000  # the usual consumer IR carrier (NEC and most TVs)
 
 
 class ProntoError(ValueError):
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     enc = sub.add_parser("encode", help="ir-ctl pulse text -> Pronto hex")
     enc.add_argument("pulses", nargs="*", help="pulse text; read from stdin when omitted")
-    enc.add_argument("--carrier", type=int, default=38000, help="carrier frequency in Hz (default 38000)")
+    enc.add_argument("--carrier", type=int, default=DEFAULT_CARRIER_HZ, help=f"carrier frequency in Hz (default {DEFAULT_CARRIER_HZ})")
     enc.add_argument("--gap", type=int, default=DEFAULT_GAP_US, help="trailing space in us added when the text ends on a pulse")
 
     args = parser.parse_args(argv)
