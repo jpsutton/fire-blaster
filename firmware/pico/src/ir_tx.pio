@@ -1,0 +1,23 @@
+; Carrier-modulated IR output on one side-set pin, active high.
+;
+; The FIFO carries pairs of words: a mark and the space after it, each in
+; carrier periods minus one. One carrier period is CYCLES_PER_PERIOD state
+; machine cycles, high for the first third (33% duty); the clock divider
+; sets the carrier frequency. The pin idles low while waiting for words.
+
+.program ir_tx
+.side_set 1
+
+.define PUBLIC CYCLES_PER_PERIOD 12
+
+.wrap_target
+    pull block          side 0
+    out x, 32           side 0
+    pull block          side 0
+    out y, 32           side 0
+mark:
+    nop                 side 1 [3]   ; 4 cycles high
+    jmp x-- mark        side 0 [7]   ; 8 cycles low
+space:
+    jmp y-- space       side 0 [11]  ; 12 cycles low
+.wrap

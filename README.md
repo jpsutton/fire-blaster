@@ -64,6 +64,11 @@ transmitters, and `--ir log` only logs what would be sent.
 LIRC devices are root-only by default; `udev/70-fire-blaster.rules` opens
 them to the `input` group, as it does `/dev/uinput`.
 
+For a cheap transmitter, `firmware/pico/` turns a Raspberry Pi Pico or a
+USB-A RP2040 board and an IR LED module into a USB blaster. The kernel's
+`ir_toy` driver sees it as an IR Toy and registers it as a LIRC device, so
+`"auto"` finds it. See [firmware/pico/README.md](firmware/pico/README.md).
+
 ## A remote for an AV receiver
 
 The old service.irblaster add-on sent a Media Center remote's volume, mute and
