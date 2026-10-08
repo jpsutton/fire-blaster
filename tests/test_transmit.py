@@ -24,10 +24,12 @@ SIGNAL = IrSignal(38000, (3400, 1600, 500, 400, 500, 40000))
 
 
 def test_ioctl_numbers_match_linux_lirc_h():
-    # The values the old service.irblaster add-on got from a C program.
-    assert LIRC_GET_FEATURES == 2147772672
-    assert LIRC_SET_SEND_MODE == 1074030865
-    assert LIRC_SET_SEND_CARRIER == 1074030867
+    # Written out field by field, independently of _lirc_ioctl(), as
+    # asm-generic/ioctl.h lays them out: 0x8004 = read, 4 bytes (0x4004 =
+    # write); 0x69 = 'i'; then the command number from linux/lirc.h.
+    assert LIRC_GET_FEATURES == 0x8004_69_00  # _IOR('i', 0x00, __u32)
+    assert LIRC_SET_SEND_MODE == 0x4004_69_11  # _IOW('i', 0x11, __u32)
+    assert LIRC_SET_SEND_CARRIER == 0x4004_69_13  # _IOW('i', 0x13, __u32)
 
 
 def test_pulses_end_on_a_pulse_and_repeat_count_times():

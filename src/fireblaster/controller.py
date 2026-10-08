@@ -44,7 +44,7 @@ import logging
 from collections.abc import Callable, Hashable
 from typing import Any
 
-from evdev import ecodes
+from evdev import KeyEvent, ecodes
 
 from .config import Config
 from .profiles import Profile, ProfileSet
@@ -60,7 +60,6 @@ KEYS_PREV_CODE = {ecodes.KEY_UP}
 KEYS_ACCEPT = {ecodes.KEY_SELECT, ecodes.KEY_ENTER, ecodes.KEY_KPENTER, ecodes.KEY_OK}
 KEYS_CANCEL = {ecodes.KEY_BACK, ecodes.KEY_ESC, ecodes.KEY_HOMEPAGE, ecodes.KEY_EXIT}
 
-KEY_DOWN, KEY_UP, KEY_HOLD = 1, 0, 2
 
 # next/prev walk the whole candidate list; *_brand and *_code are what the keys use.
 SETUP_ACTIONS = ("next", "prev", "next_brand", "prev_brand", "next_code", "prev_code", "accept", "cancel")
@@ -318,12 +317,12 @@ class Controller:
         if code in drop:
             return False
         if code in self._combo:
-            if value == KEY_DOWN:
+            if value == KeyEvent.key_down:
                 self._combo_down[code] = source
                 if self.setup is None and self._combo_complete():
                     self._claim_combo()
                     return False
-            elif value == KEY_UP:
+            elif value == KeyEvent.key_up:
                 self._combo_down.pop(code, None)
                 self._check_combo_broken()
         # Setup mode keeps its own meaning for keys (Home = cancel), but a hold
@@ -333,9 +332,9 @@ class Controller:
         function = keymap.get(code)
         if function is None:
             return self._other_key(source, code, value)
-        if value == KEY_DOWN:
+        if value == KeyEvent.key_down:
             self._press(source, code, function)
-        elif value == KEY_UP:
+        elif value == KeyEvent.key_up:
             self._release(code)
         # Kernel autorepeat (value 2) is ignored; IR repeat runs on its own timer.
         return False
@@ -366,16 +365,16 @@ class Controller:
         """A key with a hold action. Nothing passes through directly: a short
         press is re-sent as a tap on release, a long one as the hold chord."""
         key = (source, code)
-        if value == KEY_DOWN:
+        if value == KeyEvent.key_down:
             action = self.cfg.hold[code]
             loop = asyncio.get_running_loop()
             self._holding[key] = loop.call_later(action.seconds, self._hold_fired, source, code)
-        elif value == KEY_UP and key in self._holding:
+        elif value == KeyEvent.key_up and key in self._holding:
             timer = self._holding.pop(key)
             if timer is not None:  # released before the hold fired
                 timer.cancel()
-                self.inject(source, code, KEY_DOWN)
-                self.inject(source, code, KEY_UP)
+                self.inject(source, code, KeyEvent.key_down)
+                self.inject(source, code, KeyEvent.key_up)
         # Kernel autorepeat while held is dropped.
         return False
 
@@ -387,9 +386,9 @@ class Controller:
         send = self.cfg.hold[code].send
         log.info("%s held: sending %s", key_name(code), "+".join(key_name(k) for k in send))
         for k in send:
-            self.inject(source, k, KEY_DOWN)
+            self.inject(source, k, KeyEvent.key_down)
         for k in reversed(send):
-            self.inject(source, k, KEY_UP)
+            self.inject(source, k, KeyEvent.key_up)
 
     # -- intercepted keys ---------------------------------------------------
 
@@ -464,7 +463,7 @@ class Controller:
         for code, source in self._combo_down.items():
             if (source, code) in self._passed:
                 self._passed.discard((source, code))
-                self.inject(source, code, KEY_UP)
+                self.inject(source, code, KeyEvent.key_up)
             if code == self._repeat_key:
                 self._stop_repeat()
             self._down.pop(code, None)
@@ -491,13 +490,13 @@ class Controller:
 
     def _other_key(self, source: Hashable, code: int, value: int) -> bool:
         key = (source, code)
-        if value == KEY_DOWN:
+        if value == KeyEvent.key_down:
             if self.setup:
                 self._setup_nav(code)
                 return False
             self._passed.add(key)
             return True
-        if value == KEY_HOLD:
+        if value == KeyEvent.key_hold:
             return key in self._passed
         # Release: pass it only if the press was passed, so apps never see a
         # stray key-up, and keys held across a mode change never get stuck.

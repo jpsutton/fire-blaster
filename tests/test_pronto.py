@@ -15,6 +15,7 @@ NEC = (
 
 def test_decode_nec():
     sig = pronto.decode(NEC)
+    # Word 1 is the carrier period in Pronto clock units: 1e6 / (0x6D * 0.241246 us).
     assert sig.carrier == 38029
     assert len(sig.once) == 2 * 0x22
     assert len(sig.repeat) == 2 * 2
