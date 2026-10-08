@@ -1,45 +1,61 @@
 # fire-blaster
 
-Control a hotel TV with an Alexa Voice Remote that is paired to a Linux mini PC.
+Intercept keys from Linux input devices and send them as IR to the equipment
+around the PC.
 
-The remote's navigation keys drive the media apps on the PC (Kodi, Jellyfin
-Desktop, and so on). Its volume, mute and power keys are intercepted and sent as
-IR to the TV through a USB IR blaster. You pick the TV's code set with the
-remote itself, so no Fire TV is needed and nothing has to be set up in advance.
+fireblasterd grabs remotes (or keyboards) on a Linux box, usually a media PC.
+It turns the keys you choose into IR codes, sends them through a USB IR
+blaster, and passes every other key through to apps as usual. The common case
+is power and volume. A Bluetooth or RF remote drives Kodi or Jellyfin on the
+PC, but its power, volume and mute keys switch on the TV and set the volume
+on the TV, soundbar or AV receiver. Those devices only understand IR.
+
+Some setups it handles:
+
+- **A Bluetooth remote paired to a mini PC**, for example an Alexa Voice
+  Remote with no Fire TV. Navigation goes to the media apps, and power and
+  volume go to the TV. You pick the TV's code set with the remote itself
+  ([setup mode](#setup-mode-choosing-the-tvs-code-set)), so it works on a TV
+  you've never seen before, such as a hotel TV.
+- **A Media Center remote** whose volume and mute keys drive an AV receiver
+  hidden in a cabinet ([example](#a-remote-for-an-av-receiver)).
+- **Key reshaping without IR**: [remapped](#remapped-keys),
+  [dropped](#dropped-keys) and [long-press](#long-press-keys) keys work on any
+  grabbed remote.
 
 This rewrites [service.irblaster](https://github.com/jpsutton/service.irblaster).
-It runs as a standalone systemd service instead of a Kodi add-on, reads the
-remote through evdev instead of eventlircd, and keeps IR codes in profile files
-instead of in the source.
+It runs as a standalone systemd service instead of a Kodi add-on, reads
+remotes through evdev instead of eventlircd, and keeps IR codes in profile
+files instead of in the source.
 
-**Status:** IR goes out through any kernel LIRC transmitter (`/dev/lircN`).
-The Media Center USB transceiver (`mceusb`) is the target hardware. See
-[IR output](#ir-output).
+**Status:** IR goes out through any kernel LIRC transmitter (`/dev/lircN`),
+such as a Media Center USB transceiver (`mceusb`) or the Pico-based blaster
+in [`firmware/pico/`](firmware/pico/README.md). See [IR output](#ir-output).
 
 ## How it works
 
 ```
-BT remote ──► /dev/input/eventN ──grab──► fireblasterd ──► uinput clone ──► Kodi / Jellyfin / Plasma
-                                               │            (nav keys only)
-                                               ▼
-                                       vol/mute/power ──► IR emitter ──► TV
-                                               │
-                                     control socket (JSON) ◄──► fireblaster-setup (on-screen UI)
+remote ──► /dev/input/eventN ──grab──► fireblasterd ──► uinput clone ──► Kodi / Jellyfin / desktop
+                                            │            (all other keys)
+                                            ▼
+                             power/volume/mute… ──► IR blaster ──► TV / AVR / soundbar
+                                            │
+                                  control socket (JSON) ◄──► fireblaster-setup (on-screen UI)
 ```
 
 - Each input device whose name matches `[device] names` and that can send an
   intercepted key is grabbed (`EVIOCGRAB`). The daemon re-sends every event
   except the intercepted keys through a uinput clone named `<name> (fire-blaster)`.
-  Apps never see volume or power, so you don't need `noop` keymaps and
-  `KEY_POWER` can't shut down the PC.
+  Apps never see the intercepted keys, so you don't need `noop` keymaps, and
+  `KEY_POWER` turns off the TV instead of shutting down the PC.
 - Volume keys re-blast every 120 ms while held, after a 350 ms delay, on remotes
-  that report holds. The Alexa Voice Remote doesn't: it sends volume, mute and
-  power as instant taps (press and release in the same millisecond, however
-  long the key is held), so each press is one IR blast.
+  that report holds. Some don't: the Alexa Voice Remote, for example, sends
+  volume, mute and power as instant taps (press and release in the same
+  millisecond, however long the key is held), so each press is one IR blast.
 - Toggle-bit codes (RC5/RC6, stored as `code1`/`code2` in the Amazon data)
   alternate on each press.
-- The remote sleeps and reconnects often, so input devices are rescanned every
-  second.
+- Bluetooth remotes sleep and reconnect often, so input devices are rescanned
+  every second.
 
 ## IR output
 
@@ -295,6 +311,8 @@ fireblaster-pronto encode --carrier 38000 "+9000 -4500 +560 ..."
 
 ## Notes
 
+Notes from the Alexa Voice Remote, the remote fireblasterd was first built for:
+
 - **Remote IR profile.** If the remote was ever set up for TV control on a Fire
   TV, it may still blast its own stored codes as well as sending BT events. Use
   a factory-reset remote, and check that it stays dark by pointing a phone
@@ -304,5 +322,7 @@ fireblaster-pronto encode --carrier 38000 "+9000 -4500 +560 ..."
   `KEY_HOMEPAGE`, Menu = `KEY_MENU`, volume/mute/power = `KEY_VOLUMEUP/DOWN`,
   `KEY_MUTE`, `KEY_POWER`. Holding Play/Pause made the remote drop its BT
   connection for about 7 s, so don't use it in a combo.
-- **Device names.** The default patterns (`^AR( Keyboard)?$`, `Amazon`, `Fire ?TV`)
-  cover the 2nd-gen Alexa Voice Remote ("AR Keyboard"). Confirm the real name with `--list-devices`.
+- **Device names.** The default `[device] names` patterns (`^AR( Keyboard)?$`,
+  `Amazon`, `Fire ?TV`) match the 2nd-gen Alexa Voice Remote ("AR Keyboard").
+  For any other remote, set `names` to its input device name, which
+  `--list-devices` shows.
