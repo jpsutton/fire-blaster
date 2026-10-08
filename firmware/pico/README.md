@@ -48,8 +48,8 @@ Build with:
 cmake -B build -DPICO_BOARD=waveshare_rp2040_one -DIR_TX_PIN=29
 ```
 
-Its RGB LED is a WS2812 on GP16, which this firmware doesn't drive. The
-module's red indicator flashes on each send instead.
+The RP2040-One's RGB LED is a WS2812 on GP16, which this firmware doesn't
+drive. The IR module's red indicator LED flashes on each send instead.
 
 ## Building
 
