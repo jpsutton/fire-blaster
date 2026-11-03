@@ -217,3 +217,29 @@ def test_grab_gives_up_on_a_stuck_key(tmp_path, monkeypatch, caplog):
 
     assert dev.grabbed
     assert "grabbing with KEY_DOWN still held" in caplog.text
+
+
+def test_power_button_is_grabbed_and_never_remapped(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "UInput", FakeUInput)
+    FakeUInput.instances.clear()
+    cfg = Config(state_path=tmp_path / "state.json")
+    # couchbox remaps the remote's KEY_POWER; the PC's button must not follow.
+    cfg.apply({"power_button": {"names": ["^Power Button$"]}, "remap": {"KEY_POWER": "KEY_F24"}})
+    ctl = Controller(cfg, ProfileSet(PROFILES), State(cfg.state_path, "lg-a"), FakeTx())
+    mgr = daemon.DeviceManager(cfg, ctl)
+    events = [key(e.KEY_POWER, 1), syn(), key(e.KEY_POWER, 0), syn(), key(e.KEY_WAKEUP, 1), syn(), key(e.KEY_WAKEUP, 0), syn()]
+    dev = FakeDevice("Power Button", [e.KEY_POWER, e.KEY_WAKEUP], events)
+    assert mgr.matches(dev)
+    assert not mgr.matches(FakeDevice("Sleep Button", [e.KEY_SLEEP], []))
+
+    async def body():
+        await mgr.serve(dev)
+        assert ctl.remote_setup
+        ctl.shutdown()
+
+    asyncio.run(body())
+
+    assert dev.grabbed
+    (ui,) = FakeUInput.instances
+    keys = [(c, v) for t, c, v in ui.events if t == e.EV_KEY]
+    assert keys == [(e.KEY_WAKEUP, 1), (e.KEY_WAKEUP, 0)]  # power swallowed, the rest passed

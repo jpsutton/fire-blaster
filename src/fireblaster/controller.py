@@ -22,6 +22,17 @@ Setup mode (hold the `setup_combo` keys, Back+OK by default, for
         Back / Home    leave setup mode without changing anything
     Setup mode also ends, unchanged, after `setup_timeout_seconds` idle.
 
+Remote setup (tap the PC's power button, see [power_button])
+    Teaches the PC an IR remote it doesn't know (irremote.RemoteWizard).
+    Each frame the receiver hears is matched against the profile database;
+    once the arrows and OK are known, OK on the new remote asks for Back
+    and Home (OK skips either) and saves it.
+    From then on its buttons are keys, sent through the IR_SOURCE uinput
+    device like a grabbed remote's. Keys from grabbed remotes are swallowed
+    meanwhile; another power button tap, Back / Home, or
+    `setup_timeout_seconds` idle closes it without saving. The power button
+    never shuts the PC down while fire-blaster holds it.
+
 The combo keys usually pass through to apps. The first one is passed
 normally, since it may just be a keypress; once the whole combo is held, the
 controller "claims" it: already-passed combo keys get a synthetic release on
@@ -47,7 +58,10 @@ from typing import Any
 from evdev import KeyEvent, ecodes
 
 from .config import Config
+from .irdecode import IrCode, Repeat
 from .profiles import Profile, ProfileSet
+from .irremote import IrKeys, LearnedRemote, RemoteWizard
+from .remotedb import RemoteIndex
 from .state import State
 from .transmit import Transmitter
 
@@ -60,6 +74,9 @@ KEYS_PREV_CODE = {ecodes.KEY_UP}
 KEYS_ACCEPT = {ecodes.KEY_SELECT, ecodes.KEY_ENTER, ecodes.KEY_KPENTER, ecodes.KEY_OK}
 KEYS_CANCEL = {ecodes.KEY_BACK, ecodes.KEY_ESC, ecodes.KEY_HOMEPAGE, ecodes.KEY_EXIT}
 
+
+# The source name for learned IR remotes' keys (see ir_received).
+IR_SOURCE = "ir"
 
 # next/prev walk the whole candidate list; *_brand and *_code are what the keys use.
 SETUP_ACTIONS = ("next", "prev", "next_brand", "prev_brand", "next_code", "prev_code", "accept", "cancel")
@@ -137,6 +154,10 @@ class Controller:
         self.tx = tx
         self.active: Profile | None = profiles.get(state.profile)
         self.setup: SetupSession | None = None
+        self.remote_setup = False
+        # Built in the background at startup; None until then.
+        self.remote_index: RemoteIndex | None = None
+        self._wizard: RemoteWizard | None = None  # in remote setup
         # Writes a key event to a source's uinput clone; set by the daemon.
         self.inject = inject or (lambda source, code, value: None)
         self.listeners: list[Callable[[Event], None]] = []
@@ -145,6 +166,7 @@ class Controller:
         self._sources: dict[Hashable, tuple[dict[int, str], set[int] | frozenset[int]]] = {}
         # source -> profile id its keys always blast ([[remote]] profile)
         self._fixed: dict[Hashable, str] = {}
+        self._power_buttons: set[Hashable] = set()  # [power_button] sources
 
         self._down: dict[int, Hashable] = {}  # intercepted key code -> source device
         self._passed: set[tuple[Hashable, int]] = set()  # (source, code) presses sent to uinput
@@ -156,6 +178,13 @@ class Controller:
         self._combo_down: dict[int, Hashable] = {}  # combo key code -> source device
         self._combo_timer: asyncio.TimerHandle | None = None
         self._setup_timer: asyncio.TimerHandle | None = None
+
+        self.ir_keys = IrKeys(self._ir_key)
+        for data in state.remotes:
+            try:
+                self.ir_keys.remotes.append(LearnedRemote.from_json(data))
+            except (KeyError, TypeError, ValueError) as e:
+                log.warning("ignoring a saved IR remote: %s", e)
 
         if state.profile and self.active is None:
             log.warning("saved profile %r not found; run setup mode", state.profile)
@@ -173,15 +202,14 @@ class Controller:
     def intercepted_codes_for(self, device_name: str) -> set[int]:
         """Keys fire-blaster acts on for one remote; a device that has any of
         them is grabbed."""
-        return (
-            set(self.cfg.keymap_for(device_name))
-            | set(self.cfg.hold)
-            | set(self.cfg.remap)
-            | set(self.cfg.drop_for(device_name))
-        )
+        return self.cfg.intercepted_codes_for(device_name)
 
     def attach(self, source: Hashable, device_name: str) -> None:
         """A remote device was grabbed: use its [[remote]] settings."""
+        if self.cfg.is_power_button(device_name):
+            self._power_buttons.add(source)
+            return
+        self._power_buttons.discard(source)
         self._sources[source] = (self.cfg.keymap_for(device_name), self.cfg.drop_for(device_name))
         if fixed := self.cfg.profile_for(device_name):
             self._fixed[source] = fixed
@@ -202,8 +230,11 @@ class Controller:
             codes.update(action.send)
         return codes
 
-    def remapped(self, code: int) -> int:
-        """The key code to use for one the remote sent ([remap])."""
+    def remapped(self, source: Hashable, code: int) -> int:
+        """The key code to use for one the remote sent ([remap]). Power
+        buttons are never remapped: [remap] is for remotes."""
+        if source in self._power_buttons:
+            return code
         return self.cfg.remap.get(code, code)
 
     # -- listeners and state ------------------------------------------------
@@ -247,9 +278,16 @@ class Controller:
                 "idle_timeout": remaining(self._setup_timer),
                 "test_function": self.cfg.setup_test_function,
             }
+        remote_setup = None
+        if self.remote_setup:
+            remote_setup = {
+                "idle_timeout": remaining(self._setup_timer),
+                "index_ready": self.remote_index is not None,
+                "match": self._wizard.summary() if self._wizard else None,
+            }
         return {
             "event": "state",
-            "mode": "setup" if self.setup else "normal",
+            "mode": "setup" if self.setup else "remote_setup" if self.remote_setup else "normal",
             "active": _profile_info(self.active),
             "combo": {
                 "keys": [key_name(c) for c in self.cfg.setup_combo],
@@ -260,17 +298,27 @@ class Controller:
                 set(self.cfg.keymap.values()).union(*(r.keymap.values() for r in self.cfg.remotes if r.keymap))
             ),
             "setup": setup,
+            "remote_setup": remote_setup,
         }
 
     # -- commands (control socket / UI) ---------------------------------------
 
     def start_setup(self) -> bool:
+        if self.remote_setup:
+            self._exit_remote_setup("cancelled")
         if self.setup is None:
             self._enter_setup()
         return self.setup is not None
 
+    def start_remote_setup(self) -> None:
+        if not self.remote_setup:
+            self._enter_remote_setup()
+
     def setup_action(self, action: str) -> bool:
         """Run a setup action by name (see SETUP_ACTIONS); False if not in setup."""
+        if self.remote_setup and action == "cancel":
+            self._exit_remote_setup("cancelled")
+            return True
         if self.setup is None or action not in SETUP_ACTIONS:
             return False
         self._arm_setup_timeout()
@@ -313,6 +361,10 @@ class Controller:
 
     def handle(self, source: Hashable, code: int, value: int) -> bool:
         """Process one EV_KEY event. Returns True to pass it through to uinput."""
+        if source in self._power_buttons:
+            return self._power_key(code, value)
+        if self.remote_setup:
+            return self._remote_setup_key(source, code, value)
         keymap, drop = self._settings(source)
         if code in drop:
             return False
@@ -343,6 +395,7 @@ class Controller:
         """A remote device disappeared (sleep, disconnect): forget its keys."""
         self._sources.pop(source, None)
         self._fixed.pop(source, None)
+        self._power_buttons.discard(source)
         self._passed = {k for k in self._passed if k[0] != source}
         for code in [c for c, s in self._down.items() if s == source]:
             self._release(code)
@@ -354,6 +407,7 @@ class Controller:
                 timer.cancel()
 
     def shutdown(self) -> None:
+        self.ir_keys.release()
         for timer in (self._repeat_timer, self._combo_timer, self._setup_timer, *self._holding.values()):
             if timer:
                 timer.cancel()
@@ -565,6 +619,9 @@ class Controller:
 
     def _setup_timed_out(self) -> None:
         self._setup_timer = None
+        if self.remote_setup:
+            self._exit_remote_setup("timeout")
+            return
         log.info("setup mode: idle for %gs", self.cfg.setup_timeout_seconds)
         self._exit_setup(save=False)
 
@@ -587,6 +644,129 @@ class Controller:
             self._emit({"event": "cancelled", "profile": _profile_info(self.active)})
         self._notify()
 
+    # -- power button and remote setup ----------------------------------------
+
+    def _power_key(self, code: int, value: int) -> bool:
+        """A key from the PC's power button: a tap opens remote setup, or
+        closes it again. Anything else the device sends passes through."""
+        if code != ecodes.KEY_POWER:
+            return True
+        if value == KeyEvent.key_down:
+            if self.remote_setup:
+                self._exit_remote_setup("power_button")
+            else:
+                self._enter_remote_setup()
+        return False
+
+    def _enter_remote_setup(self) -> None:
+        if self.setup:
+            self._exit_setup(save=False)
+        # Start clean: no IR repeat, pending hold or setup combo carries over.
+        self._stop_repeat()
+        self._down.clear()
+        self._combo_down.clear()
+        if self._combo_timer:
+            self._combo_timer.cancel()
+            self._combo_timer = None
+        for timer in self._holding.values():
+            if timer:
+                timer.cancel()
+        self._holding.clear()
+        self.remote_setup = True
+        self.ir_keys.release()
+        self._wizard = RemoteWizard(self.remote_index) if self.remote_index else None
+        log.info("remote setup: started by the power button")
+        self._arm_setup_timeout()
+        self._notify()
+
+    def _remote_setup_key(self, source: Hashable, code: int, value: int) -> bool:
+        """Keys from known remotes in remote setup: Back / Home close it,
+        everything else is swallowed. A release still passes if its press
+        did, so no key gets stuck."""
+        key = (source, code)
+        if value == KeyEvent.key_down:
+            if code in KEYS_CANCEL:
+                self._exit_remote_setup("cancelled")
+            else:
+                self._arm_setup_timeout()
+                self._notify()  # idle timeout was reset
+            return False
+        if value == KeyEvent.key_up and key in self._passed:
+            self._passed.discard(key)
+            return True
+        return False
+
+    def ir_received(self, code: IrCode | Repeat | None) -> None:
+        """A frame from the IR receiver: decoded, a held-button repeat, or
+        None for one that didn't decode. Remote setup learns from it;
+        otherwise a learned remote's buttons become keys."""
+        if not self.remote_setup:
+            self.ir_keys.frame(code)
+            return
+        if isinstance(code, Repeat):
+            return
+        self._arm_setup_timeout()
+        if code is None:
+            log.info("remote setup: heard an IR frame that didn't decode")
+            self._emit({"event": "ir_heard", "code": None, "function": None})
+            self._notify()
+            return
+        if self._wizard is None and self.remote_index is not None:
+            self._wizard = RemoteWizard(self.remote_index)
+        if self._wizard is None:
+            log.info("remote setup: heard %s; remote index not ready", code)
+            self._emit({"event": "ir_heard", "code": str(code), "function": None})
+            self._notify()
+            return
+        teaching = self._wizard.teaching
+        outcome = self._wizard.add(code)
+        function = self._wizard.table().get(code)
+        if teaching:
+            log.info("remote setup: %s for %s: %s", code, teaching, outcome)
+        else:
+            log.info("remote setup: heard %s = %s; looks like %s", code, function or "unknown", self._wizard.match.brands()[:3])
+        self._emit({"event": "ir_heard", "code": str(code), "function": function})
+        if outcome == "save":
+            self._save_remote()
+        else:
+            self._notify()
+
+    def _save_remote(self) -> None:
+        assert self._wizard is not None
+        remote = self._wizard.remote()
+        # The same remote set up again replaces its old table.
+        kept = [r for r in self.ir_keys.remotes if not r.codes.keys() & remote.codes.keys()]
+        self.ir_keys.remotes = [*kept, remote]
+        self.state.remotes = [r.to_json() for r in self.ir_keys.remotes]
+        self.state.save()
+        keys = sum(1 for c in remote.codes if remote.key_for(c) is not None)
+        log.info("remote setup: saved %s (%d codes, %d with keys)", remote.name, len(remote.codes), keys)
+        self._exit_remote_setup("saved", remote=remote.name)
+
+    def _ir_key(self, key: int, value: int) -> None:
+        """A learned remote's button, through the same path as a grabbed
+        remote's keys: [remap], [hold], the setup combo, then apps."""
+        code = self.remapped(IR_SOURCE, key)
+        if self.handle(IR_SOURCE, code, value):
+            self.inject(IR_SOURCE, code, value)
+
+    def _exit_remote_setup(self, reason: str, **extra: Any) -> None:
+        if not self.remote_setup:
+            return
+        self.remote_setup = False
+        if self._setup_timer:
+            self._setup_timer.cancel()
+            self._setup_timer = None
+        if self._wizard and self._wizard.match.heard and reason != "saved":
+            log.info(
+                "remote setup: heard %d presses; looks like %s",
+                len(self._wizard.match.heard),
+                self._wizard.match.brands()[:3] or "nothing known",
+            )
+        self._wizard = None
+        log.info("remote setup: closed (%s)", reason)
+        self._emit({"event": "remote_setup_closed", "reason": reason, **extra})
+        self._notify()
 
 def _profile_info(profile: Profile | None) -> dict[str, Any] | None:
     if profile is None:

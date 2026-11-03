@@ -100,3 +100,37 @@ def test_labels():
     assert ui.function_name("INPUT_SCROLL") == "Input Scroll"
     assert ui.profile_label(None) == "no TV selected"
     assert ui.profile_label({"brand": "LG", "name": "LG TV"}) == "LG / LG TV"
+
+
+def test_remote_setup_page_and_closed_result(window):
+    state = ui.demo_state("normal")
+    state.update(mode="remote_setup", remote_setup={"idle_timeout": 30.0})
+    window.on_message(state)
+    assert window.isVisible() and window.pages.currentWidget() is window.page_remote
+    assert window.remote_idle_label.text() == "Closes in 30 s"
+    window.on_message({"event": "remote_setup_closed", "reason": "timeout"})
+    window.on_message(ui.demo_state("normal"))
+    assert window.pages.currentWidget() is window.page_result
+    assert window.result_title.text() == "Remote setup closed"
+
+
+def test_remote_setup_shows_heard_button(window):
+    state = ui.demo_state("normal")
+    match = {"presses": 2, "unknown": 0, "last": {"code": "pd32:20DF02FD", "function": "DPAD_UP"},
+             "brands": [{"brand": "LG", "codesets": 2}, {"brand": "Haier", "codesets": 1}], "candidates": 3,
+             "best": {"id": "amazon-4495", "brand": "LG", "name": "LG TV"}}
+    state.update(mode="remote_setup", remote_setup={"idle_timeout": 30.0, "index_ready": True, "match": match})
+    window.on_message(state)
+    assert window.remote_heard.text() == "Heard: Up"
+    assert window.remote_brands.text() == "Looks like: LG / LG TV  (or 2 similar code sets)"
+
+
+def test_remote_setup_prompts_follow_the_wizard(window):
+    state = ui.demo_state("normal")
+    match = {"presses": 3, "unknown": 0, "last": None, "brands": [], "candidates": None, "best": None,
+             "step": "teach", "teach": "BACK"}
+    state.update(mode="remote_setup", remote_setup={"idle_timeout": 30.0, "index_ready": True, "match": match})
+    window.on_message(state)
+    assert window.remote_prompt.text() == "Press the button you use for Back.  OK skips it."
+    window.on_message({"event": "remote_setup_closed", "reason": "saved", "remote": "LG remote"})
+    assert window.result_detail.text() == "The LG remote now works this PC."

@@ -187,6 +187,45 @@ Remote, Home does (down, kernel autorepeat, up), while volume, mute and power
 arrive as instant taps. A remote with only `[hold]` keys and an empty `[keys]`
 table is still grabbed, so the feature works without IR output.
 
+## The PC's power button: remote setup
+
+A `[power_button]` section takes over the PC's own power button:
+
+```toml
+[power_button]
+names = ["^Power Button$"]   # ACPI power buttons; often two devices
+```
+
+fireblasterd grabs those devices, so neither logind nor the desktop sees the
+press. A tap opens remote setup in `fireblaster-setup`, and another tap,
+Back or Home on a grabbed remote, or `[setup] timeout_seconds` idle closes it
+without saving. `[remap]` never applies to the power button.
+
+Remote setup teaches the PC an IR remote it doesn't know, such as a stray TV
+remote. fireblasterd reads raw IR from the receiver (`[ir] receiver`), so the
+remote's protocol doesn't need a kernel keymap:
+
+1. Press a few buttons: the arrows and OK. Each one is decoded and looked up
+   in the profiles, which names the button and narrows down the remote's
+   code set ("Looks like: LG / LG TV").
+2. Once the arrows and OK are known, press OK on the new remote.
+3. Press the remote's Back button, then its Home button, when asked. OK
+   skips either.
+
+The remote is saved in `state.json`. From then on its buttons arrive as keys
+on a uinput device named `IR remote (fire-blaster)`, through `[remap]`,
+`[hold]` and the `[setup]` combo like a grabbed remote's. Volume, mute and
+power have no key: the remote already sends those to its TV. Setting up the
+same remote again replaces it.
+
+The decoder reads pulse-distance and pulse-width codes (NEC and its
+variants, Samsung, Sony): about 86% of the TV code sets. RC5 and RC6
+remotes (Philips, Media Center) aren't decoded yet.
+
+While fireblasterd runs, the button can't shut the PC down. Holding it for
+about 4 seconds still forces power-off, in firmware. Until the daemon starts
+at boot, a press still reaches logind.
+
 ## Setup mode: choosing the TV's code set
 
 Hold **Back and OK** together for **5 seconds** (`[setup] combo`). Apps may

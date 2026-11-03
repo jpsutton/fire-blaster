@@ -8,12 +8,15 @@ Server -> client, one JSON object per line:
     {"event": "state", ...}       full snapshot; sent on connect and after every change
     {"event": "tx", "function": "VOLUME_UP", "profile": {...}}
     {"event": "saved" | "cancelled", "profile": {...}}
+    {"event": "remote_setup_closed", "reason": "cancelled" | "timeout" | "power_button"}
     {"event": "error", "message": "..."}
 
 Client -> server:
     {"cmd": "state"}                                  resend the snapshot
     {"cmd": "start_setup"}
+    {"cmd": "start_remote_setup"}                     what a power button tap does
     {"cmd": "next" | "prev" | "next_brand" | "prev_brand" | "accept" | "cancel"}
+                                                      (cancel also closes remote setup)
     {"cmd": "test", "function": "MUTE_TOGGLE"}
 
 The socket is world-connectable (0666): on a single-user HTPC, anyone local
@@ -128,6 +131,8 @@ class ControlServer:
         elif cmd == "start_setup":
             if not self.ctl.start_setup():
                 self._send(writer, {"event": "error", "message": "no setup candidates; check profile directories"})
+        elif cmd == "start_remote_setup":
+            self.ctl.start_remote_setup()
         elif cmd == "test":
             function = msg.get("function")
             if not isinstance(function, str) or not self.ctl.test(function):

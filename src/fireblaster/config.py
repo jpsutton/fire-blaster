@@ -90,6 +90,10 @@ class Config:
     drop: set[int] = field(default_factory=set)
     # Per-remote overrides of [keys] and [drop], first match wins ([[remote]]).
     remotes: list[RemoteRule] = field(default_factory=list)
+    # Regexes for the PC's own power button devices ([power_button] names).
+    # A tap starts remote setup instead of shutting down. Empty by default:
+    # logind keeps the button.
+    power_button_names: list[str] = field(default_factory=list)
     repeat_functions: set[str] = field(default_factory=lambda: {"VOLUME_UP", "VOLUME_DOWN"})
     repeat_delay: float = 0.35
     repeat_interval: float = 0.12
@@ -106,6 +110,9 @@ class Config:
     # With ir_device "auto": only use LIRC devices of this kernel driver,
     # e.g. "mceusb".
     ir_driver: str | None = None
+    # IR receiver for remote setup: "auto" (first LIRC device that can
+    # receive raw IR), a device path, or "off".
+    ir_receiver: str = "auto"
     profile_dirs: list[Path] = field(default_factory=_default_profile_dirs)
     state_path: Path = field(default_factory=default_state_path)
     control_socket: Path = field(default_factory=default_socket_path)
@@ -147,6 +154,15 @@ class Config:
         if "remote" in data:
             self.remotes = [_remote_rule(table, i) for i, table in enumerate(_tables(data["remote"], "[[remote]]"))]
 
+        if "power_button" in data:
+            table = data["power_button"]
+            if not isinstance(table, dict):
+                raise ConfigError("[power_button]: expected a table")
+            unknown = set(table) - {"names"}
+            if unknown:
+                raise ConfigError(f"[power_button]: unknown setting(s) {', '.join(sorted(unknown))}")
+            self.power_button_names = _regex_list(table.get("names", []), "[power_button] names")
+
         if "hold" in data:
             self.hold = {}
             for name, table in data["hold"].items():
@@ -183,7 +199,7 @@ class Config:
         ir = data.get("ir", {})
         if not isinstance(ir, dict):
             raise ConfigError("[ir]: expected a table")
-        unknown = set(ir) - {"device", "driver"}
+        unknown = set(ir) - {"device", "driver", "receiver"}
         if unknown:
             raise ConfigError(f"[ir]: unknown setting(s) {', '.join(sorted(unknown))}")
         if "device" in ir:
@@ -192,6 +208,10 @@ class Config:
             self.ir_device = ir["device"]
         if "driver" in ir:
             self.ir_driver = str(ir["driver"]) or None
+        if "receiver" in ir:
+            if not isinstance(ir["receiver"], str) or not ir["receiver"]:
+                raise ConfigError('[ir] receiver: expected "auto", "off" or a device path')
+            self.ir_receiver = ir["receiver"]
 
         paths = data.get("paths", {})
         if "profiles" in paths:
@@ -204,11 +224,23 @@ class Config:
 
     @property
     def all_device_names(self) -> list[str]:
-        """[device] names plus every [[remote]]'s: the devices to grab."""
+        """[device] names plus every [[remote]]'s and [power_button]'s: the
+        devices to grab."""
         names = list(self.device_names)
         for rule in self.remotes:
             names += [n for n in rule.names if n not in names]
+        names += [n for n in self.power_button_names if n not in names]
         return names
+
+    def is_power_button(self, device_name: str) -> bool:
+        return any(re.search(p, device_name) for p in self.power_button_names)
+
+    def intercepted_codes_for(self, device_name: str) -> set[int]:
+        """Keys fire-blaster acts on for one device; a device that has any of
+        them is grabbed."""
+        if self.is_power_button(device_name):
+            return {ecodes.KEY_POWER}
+        return set(self.keymap_for(device_name)) | set(self.hold) | set(self.remap) | set(self.drop_for(device_name))
 
     def rule_for(self, device_name: str) -> RemoteRule | None:
         return next((rule for rule in self.remotes if rule.matches(device_name)), None)
@@ -246,16 +278,23 @@ def _key_list(keys, where: str) -> list[int]:
     return [_key_code(name, where) for name in keys]
 
 
-def _remote_rule(table: dict, index: int) -> RemoteRule:
-    where = f"[[remote]] #{index + 1}"
-    names = table.get("names")
-    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
-        raise ConfigError(f"{where}: 'names' needs at least one device name regex")
+def _regex_list(names, where: str) -> list[str]:
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ConfigError(f"{where}: expected a list of device name regexes")
     for n in names:
         try:
             re.compile(n)
         except re.error as e:
             raise ConfigError(f"{where}: bad regex {n!r}: {e}") from None
+    return list(names)
+
+
+def _remote_rule(table: dict, index: int) -> RemoteRule:
+    where = f"[[remote]] #{index + 1}"
+    names = table.get("names")
+    if not isinstance(names, list) or not names:
+        raise ConfigError(f"{where}: 'names' needs at least one device name regex")
+    _regex_list(names, f"{where} names")
     unknown = set(table) - {"names", "keys", "drop", "profile"}
     if unknown:
         raise ConfigError(f"{where}: unknown setting(s) {', '.join(sorted(unknown))}")

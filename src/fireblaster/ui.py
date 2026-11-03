@@ -6,7 +6,9 @@ Runs in the desktop session and talks to the daemon over the control socket
 - while the setup combo is held, it shows a countdown;
 - in setup mode, it shows the candidate code set, the brand list, and what
   was last sent to the TV, following the remote as you press keys;
-- when setup ends, it shows "saved" / "cancelled" briefly and hides again.
+- when setup ends, it shows "saved" / "cancelled" briefly and hides again;
+- in remote setup (a tap on the PC's power button), it shows each button
+  the receiver hears and which remotes it matches.
 
 The remote is read by the daemon, not by this window, so remote keys work
 whether or not the window has focus. A keyboard or mouse works too, when
@@ -58,6 +60,17 @@ FUNCTION_NAMES = {
     "POWER_TOGGLE": "Power",
     "POWER_ON": "Power On",
     "POWER_OFF": "Power Off",
+    "DPAD_UP": "Up",
+    "DPAD_DOWN": "Down",
+    "DPAD_LEFT": "Left",
+    "DPAD_RIGHT": "Right",
+    "DPAD_OK": "OK",
+    "SMART_TV_EXIT": "Back",
+    "MENU_MAIN": "Menu",
+    "BACK": "Back",
+    "EXIT": "Back",
+    "HOME": "Home",
+    "SMART_TV": "Home",
 }
 KEY_NAMES = {"KEY_BACK": "Back", "KEY_KPENTER": "OK", "KEY_ENTER": "OK", "KEY_SELECT": "OK", "KEY_HOMEPAGE": "Home"}
 
@@ -190,8 +203,9 @@ class SetupWindow(QWidget):
         self.page_waiting = self._build_waiting()
         self.page_combo = self._build_combo()
         self.page_setup = self._build_setup()
+        self.page_remote = self._build_remote_setup()
         self.page_result = self._build_result()
-        for page in (self.page_waiting, self.page_combo, self.page_setup, self.page_result):
+        for page in (self.page_waiting, self.page_combo, self.page_setup, self.page_remote, self.page_result):
             self.pages.addWidget(page)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(*(int(64 * scale),) * 4)
@@ -295,6 +309,38 @@ class SetupWindow(QWidget):
         box.addWidget(self.current_label)
         return page
 
+    def _build_remote_setup(self) -> QWidget:
+        page = QWidget()
+        box = QVBoxLayout(page)
+
+        header = QHBoxLayout()
+        header.addWidget(_label("Remote setup", 30, "muted", align=Qt.AlignmentFlag.AlignLeft))
+        self.remote_idle_label = _label("", 30, "muted", align=Qt.AlignmentFlag.AlignRight)
+        header.addWidget(self.remote_idle_label)
+        box.addLayout(header)
+        box.addStretch()
+
+        box.addWidget(_label("Set up a remote", 72, bold=True))
+        box.addSpacing(int(24 * self.scale))
+        self.remote_prompt = _label("", 40)
+        box.addWidget(self.remote_prompt)
+        box.addSpacing(int(48 * self.scale))
+        self.remote_heard = _label("", 56, "accent", bold=True)
+        box.addWidget(self.remote_heard)
+        self.remote_brands = _label("", 32, "muted")
+        box.addWidget(self.remote_brands)
+        box.addStretch()
+
+        hints = QHBoxLayout()
+        hints.addStretch()
+        button = QPushButton("Power button   Close without saving")
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda: self.command.emit("cancel", {}))
+        hints.addWidget(button)
+        hints.addStretch()
+        box.addLayout(hints)
+        return page
+
     def _build_result(self) -> QWidget:
         page = QWidget()
         box = QVBoxLayout(page)
@@ -350,6 +396,8 @@ class SetupWindow(QWidget):
             self.status_label.setStyleSheet(self._label_css(self.status_label, "accent"))
         elif event in ("saved", "cancelled"):
             self.show_result(event, msg.get("profile"))
+        elif event == "remote_setup_closed":
+            self.show_remote_closed(msg.get("reason"), msg.get("remote"))
         elif event == "error":
             self.status_label.setText(msg.get("message", "error"))
             self._status_at = time.monotonic()
@@ -376,6 +424,11 @@ class SetupWindow(QWidget):
             self._fill_brand_strip(setup["brands"], setup["brand_index"])
             self._fill_codesets(setup["brand_codesets"], setup["brand_position"])
             timeout = setup["idle_timeout"]
+            self._idle_deadline = now + timeout if timeout is not None else None
+        elif remote := state.get("remote_setup"):
+            self._seen_setup = True
+            self._fill_remote(remote)
+            timeout = remote["idle_timeout"]
             self._idle_deadline = now + timeout if timeout is not None else None
         else:
             self._idle_deadline = None
@@ -423,6 +476,44 @@ class SetupWindow(QWidget):
         self._result_until = time.monotonic() + RESULT_SECONDS
         self.status_label.clear()
 
+    def _fill_remote(self, remote: dict) -> None:
+        match = remote.get("match")
+        last = match and match["last"]
+        step = match.get("step") if match else "listen"
+        if step == "teach":
+            prompt = f"Press the button you use for {function_name(match['teach'])}.  OK skips it."
+        elif step == "confirm":
+            prompt = "Press OK on this remote to use it."
+        else:
+            prompt = "Point the remote at the PC and press the arrows and OK."
+        self.remote_prompt.setText(prompt)
+        self.remote_prompt.setStyleSheet(self._label_css(self.remote_prompt, "fg" if step == "listen" else "ok"))
+        if not remote.get("index_ready"):
+            heard, brands = "Loading the remote database…", ""
+        elif not match or not match["presses"]:
+            heard, brands = "", ""
+        elif last is None:
+            heard, brands = "Heard a signal, but couldn't read it", ""
+        else:
+            heard = f"Heard: {function_name(last['function'])}" if last["function"] else f"Heard an unknown button ({last['code']})"
+            best = match.get("best")
+            brands = f"Looks like: {profile_label(best)}" if best else "No remote in the database sends that yet"
+            if best and match["candidates"] > 1:
+                brands += f"  (or {match['candidates'] - 1} similar code set{'s' if match['candidates'] > 2 else ''})"
+        self.remote_heard.setText(heard)
+        self.remote_brands.setText(brands)
+
+    def show_remote_closed(self, reason: str | None, remote: str | None = None) -> None:
+        if reason == "saved":
+            self.result_title.setText("✓  Remote saved")
+            self.result_title.setStyleSheet(self._label_css(self.result_title, "ok"))
+            self.result_detail.setText(f"The {remote or 'remote'} now works this PC.")
+        else:
+            self.result_title.setText("Remote setup closed")
+            self.result_title.setStyleSheet(self._label_css(self.result_title, "muted"))
+            self.result_detail.setText("No buttons were pressed for a while." if reason == "timeout" else "")
+        self._result_until = time.monotonic() + RESULT_SECONDS
+
     # -- timers and visibility --
 
     def _on_tick(self) -> None:
@@ -434,6 +525,7 @@ class SetupWindow(QWidget):
         if self._idle_deadline is not None:
             left = max(0, int(self._idle_deadline - now + 0.999))
             self.idle_label.setText(f"Closes in {left} s")
+            self.remote_idle_label.setText(f"Closes in {left} s")
         if self._status_at and now - self._status_at > STATUS_FADE_SECONDS:
             self.status_label.setStyleSheet(self._label_css(self.status_label, "muted"))
             self._status_at = 0.0
@@ -448,6 +540,8 @@ class SetupWindow(QWidget):
             page = self.page_result
         elif state and state["mode"] == "setup":
             page = self.page_setup
+        elif state and state["mode"] == "remote_setup":
+            page = self.page_remote
         elif state and self._combo_deadline is not None:
             page = self.page_combo
         elif not self.connected and self.wait_for_daemon:

@@ -28,14 +28,18 @@ from evdev import InputDevice, UInput, ecodes
 
 from .config import Config, ConfigError
 from .control import ControlServer
-from .controller import Controller, key_name
+from .controller import IR_SOURCE, Controller, key_name
+from .irremote import FUNCTION_KEYS
 from .profiles import ProfileSet
+from .receive import LircReceiver
+from .remotedb import RemoteIndex
 from .state import State
 from .transmit import LircEmitter, LogEmitter, Transmitter, lirc_nodes
 
 log = logging.getLogger("fireblasterd")
 
 UINPUT_SUFFIX = " (fire-blaster)"
+IR_UINPUT_NAME = "IR remote" + UINPUT_SUFFIX
 SCAN_INTERVAL = 1.0
 
 
@@ -98,6 +102,16 @@ class DeviceManager:
             ui.write(ecodes.EV_KEY, code, value)
             ui.syn()
 
+    def add_ir_remote(self) -> None:
+        """The uinput device learned IR remotes' keys come out of."""
+        try:
+            ui = UInput(events={ecodes.EV_KEY: set(FUNCTION_KEYS.values()) | self.ctl.injected_codes}, name=IR_UINPUT_NAME)
+        except (OSError, evdev.UInputError) as e:
+            log.error("cannot create the IR remote's uinput device (%s); learned remotes won't work", e)
+            return
+        self.uinputs[IR_SOURCE] = ui
+        self.ctl.attach(IR_SOURCE, IR_UINPUT_NAME)
+
     def matches(self, dev: InputDevice) -> bool:
         if dev.name.endswith(UINPUT_SUFFIX):
             return False
@@ -154,7 +168,7 @@ class DeviceManager:
                 if event.type == ecodes.EV_KEY:
                     # [remap] first, so holds, the setup combo and apps all see
                     # the remapped key.
-                    code = self.ctl.remapped(event.code)
+                    code = self.ctl.remapped(path, event.code)
                     passed = self.ctl.handle(path, code, event.value)
                     if event.value != 2:  # skip kernel autorepeat, ~30/s while held
                         log.debug("%s %s %s", key_name(code), "down" if event.value else "up", "pass" if passed else "eat")
@@ -191,13 +205,14 @@ def list_devices(cfg: Config) -> int:
             print(f"{path}: {e.strerror}")
             continue
         keys = set(dev.capabilities().get(ecodes.EV_KEY, []))
-        intercepted = set(cfg.keymap_for(dev.name)) | set(cfg.hold) | set(cfg.remap) | set(cfg.drop_for(dev.name))
-        hit = keys & intercepted
+        hit = keys & cfg.intercepted_codes_for(dev.name)
         name_ok = any(p.search(dev.name) for p in patterns) and not dev.name.endswith(UINPUT_SUFFIX)
         mark = "*" if name_ok and hit else " "
         print(f"{mark} {path}: {dev.name!r} phys={dev.phys!r}")
         if hit:
             print(f"      intercepted keys: {', '.join(sorted(key_name(k) for k in hit))}")
+        if name_ok and hit and cfg.is_power_button(dev.name):
+            print("      power button: a tap starts remote setup")
         dev.close()
     print("\n* = would be grabbed with the current [device] names")
     nodes = lirc_nodes()
@@ -235,6 +250,17 @@ async def run(cfg: Config, grab: bool) -> None:
         loop.add_signal_handler(sig, stop.set)
 
     tasks = [asyncio.create_task(tx.run(), name="transmitter"), asyncio.create_task(devices.run(), name="scanner")]
+    if cfg.ir_receiver != "off":
+        receiver = LircReceiver(controller.ir_received, None if cfg.ir_receiver == "auto" else cfg.ir_receiver)
+        tasks.append(asyncio.create_task(receiver.run(), name="receiver"))
+        if grab:
+            devices.add_ir_remote()
+
+    async def build_index() -> None:
+        # Decoding every profile takes about a second: keep it off the loop.
+        controller.remote_index = await asyncio.to_thread(RemoteIndex, profiles)
+
+    tasks.append(asyncio.create_task(build_index(), name="remote index"))
     log.info("watching for remotes matching %s", cfg.all_device_names)
     try:
         await stop.wait()
@@ -243,6 +269,8 @@ async def run(cfg: Config, grab: bool) -> None:
         for task in tasks + list(devices.tasks.values()):
             task.cancel()
         await asyncio.gather(*tasks, *devices.tasks.values(), return_exceptions=True)
+        if ui := devices.uinputs.pop(IR_SOURCE, None):
+            ui.close()
         if control:
             await control.close()
         if isinstance(emitter, LircEmitter):

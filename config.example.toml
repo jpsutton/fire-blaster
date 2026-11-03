@@ -60,6 +60,15 @@ KEY_POWER = "POWER_TOGGLE"
 # KEY_NUMERIC_2 = "INPUT_GAME"
 # KEY_NUMERIC_3 = "INPUT_DVD"
 
+# The PC's own power button (off by default). Matching devices are grabbed:
+# a tap opens remote setup instead of shutting down, and another tap closes
+# it. Remote setup teaches the PC an IR remote (see README). The button can't shut
+# the PC down while fireblasterd runs; holding it ~4 s still forces power-off
+# in firmware. ACPI power buttons are named "Power Button" (often two of
+# them); `fireblasterd --list-devices` shows them.
+# [power_button]
+# names = ["^Power Button$"]
+
 # Keys that do something else when held (none by default). A key listed here
 # never reaches apps directly: released before `seconds`, it is sent as a tap
 # on release; held longer, the `send` keys are sent as one chord instead. The
@@ -77,6 +86,9 @@ KEY_POWER = "POWER_TOGGLE"
 # device path such as "/dev/lirc1", or "log" to only log transmissions.
 device = "auto"
 # driver = "mceusb"   # with "auto": only LIRC devices of this kernel driver
+# IR receiver for remote setup and learned remotes: "auto" (first LIRC device
+# that can receive raw IR), a device path, or "off".
+receiver = "auto"
 
 [repeat]
 functions = ["VOLUME_UP", "VOLUME_DOWN"]  # re-blasted while held

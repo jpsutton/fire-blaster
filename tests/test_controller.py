@@ -565,3 +565,135 @@ def test_remote_profile_and_ir_config():
                 {"ir": {"device": ""}}, {"ir": {"carrier": 38000}}, {"ir": "auto"}):
         with pytest.raises(ConfigError):
             Config().apply(bad)
+
+
+PWR = "/dev/input/event2"
+
+
+def make_with_power_button(tmp_path, **overrides):
+    ctl, tx, state = make(tmp_path, "lg-a", power_button_names=["^Power Button$"], **overrides)
+    ctl.attach(PWR, "Power Button")
+    events = []
+    ctl.add_listener(events.append)
+    return ctl, tx, events
+
+
+def test_power_button_config():
+    cfg = Config()
+    assert not cfg.is_power_button("Power Button")  # off by default
+    cfg.apply({"power_button": {"names": ["^Power Button$"]}})
+    assert cfg.is_power_button("Power Button") and not cfg.is_power_button("Sleep Button")
+    assert "^Power Button$" in cfg.all_device_names
+    assert cfg.intercepted_codes_for("Power Button") == {e.KEY_POWER}
+    for bad in ({"names": "Power Button"}, {"names": ["("]}, {"nmaes": []}, ["^Power Button$"]):
+        with pytest.raises(ConfigError):
+            Config().apply({"power_button": bad})
+
+
+def test_power_button_tap_toggles_remote_setup(tmp_path):
+    async def body():
+        ctl, tx, events = make_with_power_button(tmp_path)
+        assert ctl.handle(PWR, e.KEY_POWER, 1) is False
+        assert ctl.handle(PWR, e.KEY_POWER, 0) is False
+        assert ctl.remote_setup and ctl.snapshot()["mode"] == "remote_setup"
+        assert ctl.snapshot()["remote_setup"]["idle_timeout"] > 0
+        assert tx.sent == []  # never POWER_TOGGLE IR
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        ctl.handle(PWR, e.KEY_POWER, 0)
+        assert not ctl.remote_setup
+        assert {"event": "remote_setup_closed", "reason": "power_button"} in events
+        # Other keys on the power button device pass.
+        assert ctl.handle(PWR, e.KEY_WAKEUP, 1) is True
+
+    run(body())
+
+
+def test_remote_setup_swallows_keys_and_back_closes_it(tmp_path):
+    async def body():
+        ctl, tx, events = make_with_power_button(tmp_path)
+        assert ctl.handle(SRC, e.KEY_LEFT, 1) is True  # held across the start
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        assert ctl.handle(SRC, e.KEY_LEFT, 0) is True  # its release still passes
+        assert ctl.handle(SRC, e.KEY_RIGHT, 1) is False
+        assert ctl.handle(SRC, e.KEY_RIGHT, 0) is False
+        assert ctl.handle(SRC, e.KEY_VOLUMEUP, 1) is False
+        assert tx.sent == []
+        assert ctl.handle(SRC, e.KEY_BACK, 1) is False
+        assert not ctl.remote_setup
+        assert ctl.handle(SRC, e.KEY_BACK, 0) is False  # release of the closing press
+        assert {"event": "remote_setup_closed", "reason": "cancelled"} in events
+
+    run(body())
+
+
+def test_remote_setup_times_out(tmp_path):
+    async def body():
+        ctl, _, events = make_with_power_button(tmp_path)
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        await asyncio.sleep(0.6)
+        assert not ctl.remote_setup
+        assert {"event": "remote_setup_closed", "reason": "timeout"} in events
+
+    run(body())
+
+
+def test_power_button_during_tv_setup_switches_to_remote_setup(tmp_path):
+    async def body():
+        ctl, _, events = make_with_power_button(tmp_path)
+        assert ctl.start_setup()
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        assert ctl.setup is None and ctl.remote_setup
+        assert events[-1]["mode"] == "remote_setup"
+        assert ctl.setup_action("cancel") and not ctl.remote_setup
+
+    run(body())
+
+
+def test_remote_setup_identifies_heard_buttons(tmp_path):
+    from fireblaster.irdecode import REPEAT, IrCode
+    from fireblaster.remotedb import RemoteIndex
+
+    async def body():
+        ctl, _, events = make_with_power_button(tmp_path)
+        ctl.ir_received(IrCode("pd", 32, 1))  # not in remote setup: ignored
+        assert not [ev for ev in events if ev["event"] == "ir_heard"]
+        ctl.remote_index = RemoteIndex(ctl.profiles)
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        ctl.ir_received(None)
+        ctl.ir_received(REPEAT)
+        ctl.ir_received(IrCode("pd", 32, 1))
+        heard = [ev for ev in events if ev["event"] == "ir_heard"]
+        assert heard == [{"event": "ir_heard", "code": None, "function": None},
+                         {"event": "ir_heard", "code": "pd32:00000001", "function": None}]
+        match = ctl.snapshot()["remote_setup"]["match"]
+        assert match["presses"] == 1 and match["unknown"] == 1
+
+    run(body())
+
+
+def test_remote_setup_saves_and_buttons_become_keys(tmp_path):
+    from fireblaster.controller import IR_SOURCE
+    from fireblaster.irdecode import IrCode
+    from fireblaster.remotedb import RemoteIndex
+    from test_irremote import LG, lg_profile
+
+    async def body():
+        ctl, _, events = make_with_power_button(tmp_path, remap={e.KEY_MENU: e.KEY_COMPOSE})
+        ctl.profiles = ProfileSet([lg_profile("lg", "LG", LG)])
+        ctl.remote_index = RemoteIndex(ctl.profiles)
+        ctl.attach(IR_SOURCE, "IR remote (fire-blaster)")
+        ctl.handle(PWR, e.KEY_POWER, 1)
+        for f in ("DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_OK"):
+            ctl.ir_received(IrCode("pd", 32, LG[f]))
+        assert ctl.snapshot()["remote_setup"]["match"]["teach"] == "BACK"
+        ctl.ir_received(IrCode("pd", 32, 0x20DF14EB))  # Back
+        ctl.ir_received(IrCode("pd", 32, LG["DPAD_OK"]))  # skip Home
+        assert not ctl.remote_setup
+        assert {"event": "remote_setup_closed", "reason": "saved", "remote": "LG remote"} in events
+        assert State.load(ctl.cfg.state_path).remotes[0]["profile"] == "lg"
+
+        ctl.ir_received(IrCode("pd", 32, LG["MENU_MAIN"]))
+        await asyncio.sleep(0.3)
+        assert ctl.inject.events == [(IR_SOURCE, e.KEY_COMPOSE, 1), (IR_SOURCE, e.KEY_COMPOSE, 0)]  # remapped
+
+    run(body())
